@@ -18,19 +18,22 @@ LOG_FILE = HOOKS_DIR / "blocked.log"
 
 # Rules definition: (regex pattern, description)
 BLOCKED_PATTERNS = [
-    # 1. rm -rf variants (rm -rf, rm -fr, rm -r -f, etc.)
+    # 1. rm -rf variants (rm -rf, rm -fr, rm -r -f, rm --recursive --force, etc.)
     (
-        re.compile(r"\brm\s+(?:-[a-zA-Z]*[rf][a-zA-Z]*\s+)+|(?:\brm\s+-[a-zA-Z]*r[a-zA-Z]*\s+-[a-zA-Z]*f\s+)", re.IGNORECASE),
+        re.compile(
+            r"\brm\s+.*?(?:-[a-zA-Z]*[rf][a-zA-Z]*|--recursive\s+--force|--force\s+--recursive|-r\s+--force|--force\s+-r)\b",
+            re.IGNORECASE
+        ),
         "Recursive force removal ('rm -rf') detected. High risk of irrecoverable data loss."
     ),
-    # 2. DROP TABLE (case-insensitive SQL)
+    # 2. DROP TABLE / DROP DATABASE (case-insensitive SQL)
     (
-        re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE),
-        "Database destructive command ('DROP TABLE') detected."
+        re.compile(r"\bDROP\s+(?:TABLE|DATABASE|SCHEMA)\b", re.IGNORECASE),
+        "Database destructive command ('DROP TABLE/DATABASE') detected."
     ),
-    # 3. git push --force (or git push -f)
+    # 3. git push --force (or git push -f, --force-with-lease, +branch)
     (
-        re.compile(r"\bgit\s+push\b.*?\s+(?:--force|-f\b|--force-with-lease\b)", re.IGNORECASE),
+        re.compile(r"\bgit\s+push\b.*?\s+(?:--force|-f\b|--force-with-lease\b|\+\w+)", re.IGNORECASE),
         "Remote repository history rewrite ('git push --force') detected."
     ),
     # 4. TRUNCATE (SQL TRUNCATE / TRUNCATE TABLE)
