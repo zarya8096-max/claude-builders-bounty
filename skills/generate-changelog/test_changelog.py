@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """
-Test suite for generate_changelog.py
-Validates category classification, tag range inspection, and markdown formatting.
+Comprehensive Test suite for generate_changelog.py
+Validates category classification, tag range inspection, Keep a Changelog formatting, and empty commit handling.
 """
 
 import unittest
-import tempfile
-import subprocess
-import shutil
-import os
-from pathlib import Path
-
 from generate_changelog import categorize_commit, build_changelog
 
 class TestGenerateChangelog(unittest.TestCase):
@@ -34,6 +28,10 @@ class TestGenerateChangelog(unittest.TestCase):
         self.assertIn("### Removed", output)
         self.assertIn("Add webhooks support ([`a1b2c3d`] - Alice)", output)
         self.assertIn("Prevent modal flicker on rerender ([`e5f6g7h`] - Bob)", output)
+
+    def test_empty_commits(self):
+        output = build_changelog("v1.0.0", None, [])
+        self.assertIn("No qualifying commits recorded", output)
 
 if __name__ == "__main__":
     unittest.main()

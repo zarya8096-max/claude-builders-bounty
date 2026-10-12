@@ -2,13 +2,14 @@
 """
 Generate a structured CHANGELOG.md from git commit history.
 Auto-categorizes commits since the latest git tag into: Added, Fixed, Changed, Removed.
-Follows the 'Keep a Changelog' specification.
+Follows the 'Keep a Changelog' specification. Zero-dependency Python 3.8+.
 """
 
 import subprocess
 import sys
 import os
 import re
+import argparse
 from datetime import datetime
 from collections import defaultdict
 from pathlib import Path
@@ -57,12 +58,10 @@ def categorize_commit(subject: str) -> tuple[str, str]:
     for category, pattern in CATEGORY_PATTERNS.items():
         if pattern.search(subject):
             cleaned = pattern.sub("", subject).strip()
-            # Capitalize first letter of cleaned message
             if cleaned:
                 cleaned = cleaned[0].upper() + cleaned[1:]
             return category, cleaned
             
-    # Default heuristics if conventional prefix is missing
     lower = subject.lower()
     if any(k in lower for k in ["add", "new", "feat", "support"]):
         return "Added", subject
@@ -100,23 +99,30 @@ def build_changelog(version: str, previous_tag: str | None, commits: list[tuple[
     return "\n".join(lines)
 
 def main():
-    target_file = Path("CHANGELOG.md")
-    version = sys.argv[1] if len(sys.argv) > 1 else "Unreleased"
+    parser = argparse.ArgumentParser(description="Automated Keep a Changelog Generator")
+    parser.add_argument("version", nargs="?", default="Unreleased", help="Version label (e.g. v1.0.0)")
+    parser.add_argument("--stdout", action="store_true", help="Print changelog section to stdout without modifying file")
+    parser.add_argument("--since-tag", help="Explicitly specify starting git tag instead of autodetecting latest")
+    parser.add_argument("--file", default="CHANGELOG.md", help="Target output file (default: CHANGELOG.md)")
+    args = parser.parse_args()
 
-    last_tag = get_last_tag()
+    target_file = Path(args.file)
+    last_tag = args.since_tag or get_last_tag()
     commits = get_commits_since(last_tag)
 
     if not commits:
         print(f"ℹ️ No new commits found since tag: {last_tag or 'beginning'}")
         return
 
-    new_section = build_changelog(version, last_tag, commits)
+    new_section = build_changelog(args.version, last_tag, commits)
 
-    # Read existing content if available
+    if args.stdout:
+        print(new_section)
+        return
+
     existing = ""
     if target_file.exists():
         existing = target_file.read_text(encoding="utf-8")
-        # Strip header to prepend new section
         header_match = re.match(r"(# Changelog\s*\n\s*All notable changes to this project.*?\n\n)", existing, re.DOTALL | re.IGNORECASE)
         if header_match:
             header = header_match.group(1)
@@ -133,7 +139,7 @@ def main():
         )
 
     target_file.write_text(final_content, encoding="utf-8")
-    print(f"✅ Generated {len(commits)} commits into {target_file.resolve()} (Version: {version})")
+    print(f"✅ Generated {len(commits)} commits into {target_file.resolve()} (Version: {args.version})")
 
 if __name__ == "__main__":
     main()
