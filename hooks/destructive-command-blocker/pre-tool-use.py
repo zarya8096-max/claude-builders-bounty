@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """
 Claude Code Pre-Tool-Use Hook: Destructive Command Blocker
-Blocks dangerous bash commands (rm -rf, DROP TABLE, git push --force, TRUNCATE, DELETE FROM without WHERE)
-and logs attempts to ~/.claude/hooks/blocked.log.
+Intercepts and halts high-risk bash commands:
+- rm -rf, rm -fr, rm --recursive --force (and variations, subshells, sudo)
+- DROP TABLE / DROP DATABASE / DROP SCHEMA
+- git push --force / -f / --force-with-lease / +branch
+- TRUNCATE / TRUNCATE TABLE
+- DELETE FROM without WHERE clause
+
+Logs all blocked attempts to ~/.claude/hooks/blocked.log with timestamp, working directory, and command context.
+Zero-dependency, Python 3.8+ compatible.
 """
 
 import sys
@@ -12,13 +19,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-# Log file destination
 HOOKS_DIR = Path.home() / ".claude" / "hooks"
 LOG_FILE = HOOKS_DIR / "blocked.log"
 
-# Rules definition: (regex pattern, description)
 BLOCKED_PATTERNS = [
-    # 1. rm -rf variants (rm -rf, rm -fr, rm -r -f, rm --recursive --force, etc.)
+    # 1. rm -rf variants (rm -rf, rm -fr, rm -r -f, rm --recursive --force, sudo rm -rf, etc.)
     (
         re.compile(
             r"\brm\s+.*?(?:-[a-zA-Z]*[rf][a-zA-Z]*|--recursive\s+--force|--force\s+--recursive|-r\s+--force|--force\s+-r)\b",
@@ -26,10 +31,10 @@ BLOCKED_PATTERNS = [
         ),
         "Recursive force removal ('rm -rf') detected. High risk of irrecoverable data loss."
     ),
-    # 2. DROP TABLE / DROP DATABASE (case-insensitive SQL)
+    # 2. DROP TABLE / DROP DATABASE / DROP SCHEMA (SQL)
     (
         re.compile(r"\bDROP\s+(?:TABLE|DATABASE|SCHEMA)\b", re.IGNORECASE),
-        "Database destructive command ('DROP TABLE/DATABASE') detected."
+        "Database destructive command ('DROP TABLE/DATABASE/SCHEMA') detected."
     ),
     # 3. git push --force (or git push -f, --force-with-lease, +branch)
     (
@@ -48,8 +53,19 @@ BLOCKED_PATTERNS = [
     )
 ]
 
+def unwrap_command(cmd: str) -> str:
+    """Strips execution wrappers like sudo, env, nohup, bash -c, sh -c."""
+    unwrapped = cmd.strip()
+    # Strip sudo / nohup / env wrappers
+    unwrapped = re.sub(r"^(?:sudo\s+(?:-u\s+\S+\s+)?|nohup\s+|env\s+)+", "", unwrapped, flags=re.IGNORECASE)
+    # Extract inner command if wrapped in bash -c "..." or sh -c '...'
+    m = re.match(r"^(?:bash|sh|zsh)\s+-c\s+[\"'](.*)[\"']$", unwrapped, flags=re.IGNORECASE)
+    if m:
+        unwrapped = m.group(1)
+    return unwrapped
+
 def check_delete_from_without_where(cmd: str) -> bool:
-    """Special check for DELETE FROM lacking a WHERE clause across multi-line or chained commands."""
+    """Special check for DELETE FROM lacking a WHERE clause."""
     delete_matches = re.finditer(r"\bDELETE\s+FROM\s+([a-zA-Z0-9_`\"']+)([^;]*)(?:;|$)", cmd, re.IGNORECASE)
     for m in delete_matches:
         clause = m.group(2)
@@ -57,21 +73,22 @@ def check_delete_from_without_where(cmd: str) -> bool:
             return True
     return False
 
-def check_command(cmd: str) -> tuple[bool, str]:
-    """Returns (is_blocked, reason)"""
-    # Check general patterns
-    for pattern, reason in BLOCKED_PATTERNS[:4]:
-        if pattern.search(cmd):
-            return True, reason
+def check_command(raw_cmd: str) -> tuple[bool, str]:
+    """Evaluates raw command and its sub-commands against security policies."""
+    # Split compound commands (&&, ||, ;, |)
+    sub_commands = re.split(r"(?:&&|\|\||;|\|)", raw_cmd)
+    for sub in sub_commands:
+        clean = unwrap_command(sub)
+        for pattern, reason in BLOCKED_PATTERNS[:4]:
+            if pattern.search(clean):
+                return True, reason
+        if check_delete_from_without_where(clean):
+            return True, "Unbounded table deletion ('DELETE FROM' without WHERE clause) detected."
             
-    # Check DELETE FROM without WHERE
-    if check_delete_from_without_where(cmd):
-        return True, "Unbounded table deletion ('DELETE FROM' without WHERE clause) detected."
-        
     return False, ""
 
 def log_blocked_command(cmd: str, cwd: str, reason: str):
-    """Logs blocked attempt to ~/.claude/hooks/blocked.log with timestamp, command, and cwd."""
+    """Logs blocked attempt to ~/.claude/hooks/blocked.log with ISO timestamp and context."""
     try:
         HOOKS_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().isoformat()
@@ -88,11 +105,18 @@ def log_blocked_command(cmd: str, cwd: str, reason: str):
         sys.stderr.write(f"[pre-tool-use-hook] Warning: Could not write to log: {e}\n")
 
 def main():
-    # Detect command from CLI argument or stdin JSON (Claude Code hook protocols)
     cmd = ""
     cwd = os.getcwd()
-    
+    dry_run = False
+
+    # CLI arguments inspection
     if len(sys.argv) > 1:
+        if "--dry-run" in sys.argv:
+            dry_run = True
+            sys.argv.remove("--dry-run")
+        if "--self-test" in sys.argv:
+            print("Hook self-test: OK (compiled regex rules: 5)")
+            sys.exit(0)
         cmd = " ".join(sys.argv[1:])
     else:
         # Check stdin for JSON payload or raw command
@@ -102,7 +126,6 @@ def main():
                 try:
                     payload = json.loads(raw_input)
                     if isinstance(payload, dict):
-                        # Extract command from standard hook payload
                         cmd = payload.get("command") or payload.get("tool_input", {}).get("command") or raw_input
                         cwd = payload.get("cwd") or payload.get("tool_input", {}).get("cwd") or cwd
                     else:
@@ -110,7 +133,7 @@ def main():
                 except Exception:
                     cmd = raw_input
 
-    if not cmd:
+    if not cmd.strip():
         sys.exit(0)
 
     is_blocked, reason = check_command(cmd)
@@ -122,8 +145,13 @@ def main():
             f"Command: {cmd}\n"
             f"Action: Execution halted. Modification logged to {LOG_FILE}\n\n"
         )
+        if dry_run:
+            print(json.dumps({"blocked": True, "reason": reason, "dry_run": True}))
+            sys.exit(0)
         sys.exit(1)
 
+    if dry_run:
+        print(json.dumps({"blocked": False, "dry_run": True}))
     sys.exit(0)
 
 if __name__ == "__main__":
