@@ -18,6 +18,7 @@ import re
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Tuple
 
 HOOKS_DIR = Path.home() / ".claude" / "hooks"
 LOG_FILE = HOOKS_DIR / "blocked.log"
@@ -73,7 +74,7 @@ def check_delete_from_without_where(cmd: str) -> bool:
             return True
     return False
 
-def check_command(raw_cmd: str) -> tuple[bool, str]:
+def check_command(raw_cmd: str) -> Tuple[bool, str]:
     """Evaluates raw command and its sub-commands against security policies."""
     # Split compound commands (&&, ||, ;, |)
     sub_commands = re.split(r"(?:&&|\|\||;|\|)", raw_cmd)
@@ -115,6 +116,10 @@ def main():
             dry_run = True
             sys.argv.remove("--dry-run")
         if "--self-test" in sys.argv:
+            assert check_command("rm -rf /example")[0]
+            assert check_command("DROP TABLE users")[0]
+            assert check_command("git push --force origin main")[0]
+            assert not check_command("echo hello")[0]
             print("Hook self-test: OK (compiled regex rules: 5)")
             sys.exit(0)
         cmd = " ".join(sys.argv[1:])
@@ -148,7 +153,7 @@ def main():
         if dry_run:
             print(json.dumps({"blocked": True, "reason": reason, "dry_run": True}))
             sys.exit(0)
-        sys.exit(1)
+        sys.exit(2)
 
     if dry_run:
         print(json.dumps({"blocked": False, "dry_run": True}))

@@ -65,7 +65,7 @@ def run_test():
             capture_output=True,
             text=True
         )
-        is_blocked = (res.returncode != 0)
+        is_blocked = (res.returncode == 2)
         
         if is_blocked == should_block:
             passed += 1
