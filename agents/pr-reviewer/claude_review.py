@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Claude Code PR Reviewer CLI & Agent
-Analyzes Pull Request diffs and outputs structured Markdown review comments:
+Analyzes Pull Request diffs and outputs structured Markdown or JSON review comments:
 - Summary of changes
 - Identified risks
 - Improvement suggestions
@@ -41,7 +41,7 @@ def fetch_pr_diff(owner: str, repo: str, pull_number: int, token: str | None = N
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"GitHub API Error ({e.code}): {e.reason}")
 
-def analyze_diff(diff_text: str, owner: str, repo: str, pull_number: int) -> dict:
+def analyze_diff(diff_text: str, owner: str = "repo", repo: str = "target", pull_number: int = 0) -> dict:
     """Performs static and heuristic review analysis on the diff."""
     files_changed = re.findall(r"^diff --git a/(.*?) b/", diff_text, re.MULTILINE)
     additions = len(re.findall(r"^\+[^+]", diff_text, re.MULTILINE))
@@ -51,7 +51,7 @@ def analyze_diff(diff_text: str, owner: str, repo: str, pull_number: int) -> dic
     suggestions = []
 
     # Heuristic risk detection
-    if re.search(r"\b(rm\s+-rf|DROP\s+TABLE|git\s+push\s+--force)\b", diff_text, re.I):
+    if re.search(r"\b(rm\s+-rf|DROP\s+(?:TABLE|DATABASE|SCHEMA)|git\s+push\s+--force)\b", diff_text, re.I):
         risks.append("Contains potentially destructive command strings or references that require strict execution sandboxing.")
     
     if re.search(r"(\.env|secret|api_key|private_key|token)\s*[:=]", diff_text, re.I):
@@ -87,7 +87,9 @@ def analyze_diff(diff_text: str, owner: str, repo: str, pull_number: int) -> dic
         "risks": risks,
         "suggestions": suggestions,
         "confidence": confidence,
-        "files_count": len(files_changed)
+        "files_count": len(files_changed),
+        "additions": additions,
+        "deletions": deletions
     }
 
 def format_review_markdown(review_data: dict, pr_url: str) -> str:
@@ -114,24 +116,38 @@ def format_review_markdown(review_data: dict, pr_url: str) -> str:
 """
 
 def main():
-    parser = argparse.ArgumentParser(description="Claude Code PR Reviewer CLI")
-    parser.add_argument("--pr", required=True, help="GitHub Pull Request URL (https://github.com/owner/repo/pull/123)")
-    parser.add_argument("--output", help="Optional output file path to write Markdown")
+    parser = argparse.ArgumentParser(description="Claude Code PR Reviewer CLI & Agent")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--pr", help="GitHub Pull Request URL (https://github.com/owner/repo/pull/123)")
+    group.add_argument("--diff-file", help="Path to a local unified diff file to analyze")
+    parser.add_argument("--format", choices=["markdown", "json"], default="markdown", help="Output format (default: markdown)")
+    parser.add_argument("--output", help="Optional output file path to write output")
     args = parser.parse_args()
 
     token = os.getenv("GITHUB_TOKEN")
-    owner, repo, pr_num = parse_pr_url(args.pr)
     
-    diff = fetch_pr_diff(owner, repo, pr_num, token)
+    if args.pr:
+        owner, repo, pr_num = parse_pr_url(args.pr)
+        diff = fetch_pr_diff(owner, repo, pr_num, token)
+        source_label = args.pr
+    else:
+        diff = Path(args.diff_file).read_text(encoding="utf-8")
+        owner, repo, pr_num = "local", Path(args.diff_file).stem, 0
+        source_label = f"local file: {args.diff_file}"
+
     review_data = analyze_diff(diff, owner, repo, pr_num)
-    markdown = format_review_markdown(review_data, args.pr)
+
+    if args.format == "json":
+        output_content = json.dumps(review_data, indent=2)
+    else:
+        output_content = format_review_markdown(review_data, source_label)
 
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.output).write_text(markdown, encoding="utf-8")
+        Path(args.output).write_text(output_content, encoding="utf-8")
         print(f"✅ Review written to {args.output}")
     else:
-        print(markdown)
+        print(output_content)
 
 if __name__ == "__main__":
     main()
